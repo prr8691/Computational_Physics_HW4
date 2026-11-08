@@ -1,0 +1,132 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Problem 1: Newman Exercise 8.18
+# Brusselator model using the Bulirsch-Stoer method
+
+a = 1.0
+b = 3.0
+delta = 1e-10
+
+
+# Differential equations for x and y
+def f(r, t):
+    x = r[0]
+    y = r[1]
+
+    dxdt = 1 - (b + 1)*x + a*x*x*y
+    dydt = b*x - a*x*x*y
+
+    return np.array([dxdt, dydt], float)
+
+
+# Modified midpoint method for one interval
+def midpoint(r, t, H, n):
+    h = H / n
+
+    r1 = r + 0.5*h*f(r, t)
+    r2 = r + h*f(r1, t + 0.5*h)
+
+    for i in range(n - 1):
+        r1 = r1 + h*f(r2, t + (i + 1)*h)
+        r2 = r2 + h*f(r1, t + (i + 1.5)*h)
+
+    return 0.5*(r1 + r2 + 0.5*h*f(r2, t + H))
+
+
+# Try to solve one interval using Bulirsch-Stoer
+def bulirsch_stoer(r, t, H):
+    table = []
+
+    # Allow up to 8 midpoint calculations
+    for n in range(1, 9):
+
+        row = [midpoint(r, t, H, n)]
+
+        # Richardson extrapolation
+        for m in range(1, n):
+
+            current = row[m - 1]
+            old = table[n - 2][m - 1]
+
+            factor = (n / (n - 1))**(2*m)
+
+            better = current + (current - old)/(factor - 1)
+            row.append(better)
+
+        table.append(row)
+
+        # Check the error after at least two estimates
+        if n >= 2:
+
+            error = np.max(np.abs(row[-1] - row[-2]))
+
+            if np.isfinite(error) and error <= H*delta:
+                return row[-1]
+
+    # If the interval was too large
+    return None
+
+
+# If an interval does not converge, split it in half
+def solve_interval(r, t, H):
+
+    answer = bulirsch_stoer(r, t, H)
+
+    if answer is not None:
+        return [(t + H, answer)]
+
+    # Solve the first half
+    first_half = solve_interval(r, t, H/2)
+
+    middle_r = first_half[-1][1]
+
+    # Solve the second half
+    second_half = solve_interval(
+        middle_r,
+        t + H/2,
+        H/2
+    )
+
+    return first_half + second_half
+
+
+# Initial conditions
+r0 = np.array([0.0, 0.0])
+
+# Start by trying the entire t = 0 to 20 interval
+solution = solve_interval(r0, 0.0, 20.0)
+
+
+# Save the interval boundaries and concentrations
+times = [0.0]
+x_values = [0.0]
+y_values = [0.0]
+
+for point in solution:
+
+    times.append(point[0])
+    x_values.append(point[1][0])
+    y_values.append(point[1][1])
+
+
+# Plot x(t) and y(t)
+plt.figure(figsize=(8, 5))
+
+plt.plot(times, x_values, label="x(t)")
+plt.plot(times, y_values, label="y(t)")
+
+# Dots show the adaptive interval boundaries
+plt.plot(times, x_values, "o", markersize=2.5)
+plt.plot(times, y_values, "o", markersize=2.5)
+
+plt.xlabel("Time")
+plt.ylabel("Concentration")
+plt.title("Brusselator Model")
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("hw4_problem1_brusselator.png", dpi=200)
+
+plt.show()
