@@ -1,0 +1,692 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+from numba import njit
+
+# ---------------------------------------------------------
+# Problem 2: Supermassive black hole binary
+# Adaptive RK4 with dynamical friction
+# ---------------------------------------------------------
+
+# G = M = 1, so GM/4 = 1/4
+mu = 0.25
+
+# Error tolerance found in part (a)
+d = 1e-7
+
+# Schwarzschild radius in code units
+rs = 1e-7
+
+
+# ---------------------------------------------------------
+# Equations of motion
+# state = [x, y, vx, vy]
+# ---------------------------------------------------------
+
+@njit
+def derivatives(state, A, B):
+
+    x = state[0]
+    y = state[1]
+    vx = state[2]
+    vy = state[3]
+
+    r = math.sqrt(x*x + y*y)
+    v = math.sqrt(vx*vx + vy*vy)
+
+    # Gravitational acceleration
+    ax = -mu*x/r**3
+    ay = -mu*y/r**3
+
+    # Add dynamical friction if A is not zero
+    if A != 0.0:
+
+        friction = -A/(v**3 + B)
+
+        ax += friction*vx
+        ay += friction*vy
+
+    return np.array([vx, vy, ax, ay])
+
+
+# ---------------------------------------------------------
+# One fourth-order Runge-Kutta step
+# ---------------------------------------------------------
+
+@njit
+def rk4_step(state, h, A, B):
+
+    k1 = h*derivatives(state, A, B)
+
+    k2 = h*derivatives(
+        state + 0.5*k1,
+        A,
+        B
+    )
+
+    k3 = h*derivatives(
+        state + 0.5*k2,
+        A,
+        B
+    )
+
+    k4 = h*derivatives(
+        state + k3,
+        A,
+        B
+    )
+
+    return state + (k1 + 2*k2 + 2*k3 + k4)/6.0
+
+
+# ---------------------------------------------------------
+# Adaptive RK4 integration
+# Compare one full step to two half steps
+# ---------------------------------------------------------
+
+@njit
+def integrate(state0, t_end, d, A, B, stop_radius):
+
+    max_points = 300000
+
+    times = np.empty(max_points)
+    states = np.empty((max_points, 4))
+
+    state = state0.copy()
+
+    t = 0.0
+    h = 0.01
+    n = 0
+
+    times[n] = t
+    states[n] = state
+    n += 1
+
+    while t < t_end and n < max_points:
+
+        r = math.sqrt(state[0]**2 + state[1]**2)
+
+        # Stop when the Schwarzschild radius is reached
+        if stop_radius > 0.0 and r <= stop_radius:
+            break
+
+        if t + h > t_end:
+            h = t_end - t
+
+        # One full RK4 step
+        big_step = rk4_step(state, h, A, B)
+
+        # Two half RK4 steps
+        half_step = rk4_step(state, h/2.0, A, B)
+
+        small_step = rk4_step(
+            half_step,
+            h/2.0,
+            A,
+            B
+        )
+
+        # Estimate error using the difference
+        dx = small_step[0] - big_step[0]
+        dy = small_step[1] - big_step[1]
+
+        error = math.sqrt(dx*dx + dy*dy)/15.0
+
+        target = d*h
+
+        # Choose the next step size
+        if error == 0.0:
+
+            factor = 2.0
+
+        else:
+
+            factor = 0.9*(target/error)**0.2
+
+            factor = min(
+                2.0,
+                max(0.2, factor)
+            )
+
+        # Accept the step if the error is small enough
+        if error <= target:
+
+            state = small_step + (small_step - big_step)/15.0
+
+            t += h
+
+            times[n] = t
+            states[n] = state
+
+            n += 1
+
+            h *= factor
+
+        # Otherwise try again with a smaller step
+        else:
+
+            h *= factor
+
+    return times[:n], states[:n]
+
+
+# ---------------------------------------------------------
+# Faster version used when only the final inspiral time
+# is needed for parts (c) and (d)
+# ---------------------------------------------------------
+
+@njit
+def time_to_radius(A, B, d, velocity_fraction):
+
+    # Circular velocity at r = 1 is 0.5
+    state = np.array([
+        1.0,
+        0.0,
+        0.0,
+        0.5*velocity_fraction
+    ])
+
+    t = 0.0
+    h = 0.01
+
+    while t < 500.0:
+
+        r = math.sqrt(
+            state[0]**2 +
+            state[1]**2
+        )
+
+        if r <= rs:
+            return t
+
+        big_step = rk4_step(
+            state,
+            h,
+            A,
+            B
+        )
+
+        half_step = rk4_step(
+            state,
+            h/2.0,
+            A,
+            B
+        )
+
+        small_step = rk4_step(
+            half_step,
+            h/2.0,
+            A,
+            B
+        )
+
+        dx = small_step[0] - big_step[0]
+        dy = small_step[1] - big_step[1]
+
+        error = math.sqrt(dx*dx + dy*dy)/15.0
+
+        target = d*h
+
+        if error == 0.0:
+
+            factor = 2.0
+
+        else:
+
+            factor = 0.9*(target/error)**0.2
+
+            factor = min(
+                2.0,
+                max(0.2, factor)
+            )
+
+        if error <= target:
+
+            state = small_step + (small_step - big_step)/15.0
+
+            t += h
+
+            h *= factor
+
+        else:
+
+            h *= factor
+
+    return np.nan
+
+
+# =========================================================
+# PART (a)
+# Choose the error tolerance
+# =========================================================
+
+r_apo = 1.0
+r_peri = 1e-7
+
+# Semimajor axis
+a_orbit = (r_apo + r_peri)/2.0
+
+# Initial velocity from the vis-viva equation
+v_initial = math.sqrt(
+    mu*(
+        2.0/r_apo
+        - 1.0/a_orbit
+    )
+)
+
+# Orbital period
+period = 2.0*math.pi*math.sqrt(
+    a_orbit**3/mu
+)
+
+state_a = np.array([
+    1.0,
+    0.0,
+    0.0,
+    v_initial
+])
+
+# No dynamical friction, so A = 0
+time_a, states_a = integrate(
+    state_a,
+    10.0*period,
+    d,
+    0.0,
+    1.0,
+    -1.0
+)
+
+x_a = states_a[:, 0]
+y_a = states_a[:, 1]
+
+vx_a = states_a[:, 2]
+vy_a = states_a[:, 3]
+
+r_a = np.sqrt(
+    x_a**2 +
+    y_a**2
+)
+
+v2_a = (
+    vx_a**2 +
+    vy_a**2
+)
+
+# Energy should stay constant without friction
+energy = 0.5*v2_a - mu/r_a
+
+# Angular momentum should also stay constant
+angular_momentum = (
+    x_a*vy_a
+    - y_a*vx_a
+)
+
+energy_error = np.abs(
+    (energy - energy[0])/energy[0]
+)
+
+L_error = np.abs(
+    (angular_momentum - angular_momentum[0])
+    / angular_momentum[0]
+)
+
+
+# Plot the numerical error over 10 orbits
+plt.figure(figsize=(8, 5))
+
+plt.semilogy(
+    time_a[1:],
+    energy_error[1:],
+    label="Relative energy error"
+)
+
+plt.semilogy(
+    time_a[1:],
+    L_error[1:],
+    label="Relative angular momentum error"
+)
+
+plt.xlabel("Time")
+plt.ylabel("Relative error")
+
+plt.title("Accuracy Check Over 10 Orbits")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig(
+    "hw4_problem2_accuracy.png",
+    dpi=200
+)
+
+plt.show()
+
+
+# =========================================================
+# PART (b)
+# A = B = 1
+# =========================================================
+
+# Initial velocity is 0.8 times circular velocity
+state_b = np.array([
+    1.0,
+    0.0,
+    0.0,
+    0.4
+])
+
+time_b, states_b = integrate(
+    state_b,
+    100.0,
+    d,
+    1.0,
+    1.0,
+    rs
+)
+
+x_b = states_b[:, 0]
+y_b = states_b[:, 1]
+
+r_b = np.sqrt(
+    x_b**2 +
+    y_b**2
+)
+
+
+# Plot the path of the black hole
+plt.figure(figsize=(6, 6))
+
+plt.plot(
+    x_b,
+    y_b
+)
+
+plt.xlabel("x")
+plt.ylabel("y")
+
+plt.title(
+    "Black Hole Orbit with Dynamical Friction"
+)
+
+plt.axis("equal")
+
+plt.tight_layout()
+
+plt.savefig(
+    "hw4_problem2_orbit.png",
+    dpi=200
+)
+
+plt.show()
+
+
+# Plot log(r) as a function of time
+plt.figure(figsize=(8, 5))
+
+plt.plot(
+    time_b,
+    np.log10(r_b)
+)
+
+plt.xlabel("Time")
+plt.ylabel(r"$\log_{10}(r)$")
+
+plt.title(
+    "Orbital Radius with Dynamical Friction"
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    "hw4_problem2_logr.png",
+    dpi=200
+)
+
+plt.show()
+
+
+# =========================================================
+# Convert code time to Myr
+# =========================================================
+
+G = 6.67430e-11
+c = 299792458.0
+
+pc = 3.085677581491367e16
+
+year = 365.25*24*3600
+
+# One distance unit is 100 pc
+length_unit = 100.0*pc
+
+# rs = 10^-7 in code units
+rs_physical = 1e-7*length_unit
+
+# Use rs = 2GM/c^2 to find the physical mass
+mass_physical = (
+    rs_physical*c**2
+    / (2.0*G)
+)
+
+# Time unit from G = M = 1
+time_unit = math.sqrt(
+    length_unit**3
+    / (G*mass_physical)
+)
+
+time_unit_myr = (
+    time_unit
+    / (1e6*year)
+)
+
+
+# =========================================================
+# PART (c)
+# Dependence on B/A
+# =========================================================
+
+values = np.array([
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0
+])
+
+ratios = []
+times_myr = []
+A_values = []
+
+for A in values:
+
+    for B in values:
+
+        hit_time = time_to_radius(
+            A,
+            B,
+            d,
+            0.8
+        )
+
+        ratios.append(B/A)
+
+        times_myr.append(
+            hit_time*time_unit_myr
+        )
+
+        A_values.append(A)
+
+
+ratios = np.array(ratios)
+
+times_myr = np.array(times_myr)
+
+A_values = np.array(A_values)
+
+
+# Plot inspiral time against B/A
+plt.figure(figsize=(8, 5))
+
+for A in values:
+
+    mask = A_values == A
+
+    order = np.argsort(
+        ratios[mask]
+    )
+
+    plt.plot(
+        ratios[mask][order],
+        times_myr[mask][order],
+        marker="o",
+        label=f"A = {A:g}"
+    )
+
+plt.xlabel("B/A")
+
+plt.ylabel(
+    "Time to reach $r_s$ (Myr)"
+)
+
+plt.title(
+    "Inspiral Time vs B/A"
+)
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig(
+    "hw4_problem2_ratio.png",
+    dpi=200
+)
+
+plt.show()
+
+
+# =========================================================
+# PART (d)
+# Test different initial velocities
+# =========================================================
+
+velocity_fractions = np.array([
+    0.5,
+    0.6,
+    0.8,
+    1.0,
+    1.2
+])
+
+velocity_times = []
+
+for fraction in velocity_fractions:
+
+    hit_time = time_to_radius(
+        1.0,
+        1.0,
+        d,
+        fraction
+    )
+
+    velocity_times.append(
+        hit_time*time_unit_myr
+    )
+
+
+# Also test the same B/A ratio with different A and B
+same_ratio_values = np.array([
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0
+])
+
+same_ratio_times = []
+
+for value in same_ratio_values:
+
+    hit_time = time_to_radius(
+        value,
+        value,
+        d,
+        0.8
+    )
+
+    same_ratio_times.append(
+        hit_time*time_unit_myr
+    )
+
+
+# =========================================================
+# Print the important results
+# =========================================================
+
+print("Part (a)")
+print("Chosen tolerance d =", d)
+print("Initial velocity =", v_initial)
+
+print(
+    "Maximum relative energy drift =",
+    np.max(energy_error)
+)
+
+print(
+    "Maximum relative angular momentum drift =",
+    np.max(L_error)
+)
+
+print(
+    "Minimum radius =",
+    np.min(r_a)
+)
+
+
+print()
+print("Part (b)")
+
+print(
+    "Time to reach rs in code units =",
+    time_b[-1]
+)
+
+print(
+    "One code time unit in Myr =",
+    time_unit_myr
+)
+
+print(
+    "Inspiral time in Myr =",
+    time_b[-1]*time_unit_myr
+)
+
+
+print()
+print("Part (d)")
+print("Initial velocity test")
+
+for fraction, hit_time in zip(
+    velocity_fractions,
+    velocity_times
+):
+
+    print(
+        fraction,
+        hit_time
+    )
+
+
+print()
+print("Same B/A = 1 test")
+
+for value, hit_time in zip(
+    same_ratio_values,
+    same_ratio_times
+):
+
+    print(
+        value,
+        value,
+        hit_time
+    )
